@@ -37,11 +37,12 @@ let aiConfig = {
 };
 
 // Múltiplas chaves de API Gemini (ARRAY)
-let geminiApiKeys = []; 
+let geminiApiKeys = [];
 let currentGeminiApiKeyIndex = 0; // Índice da chave de API atualmente em uso
-let chatHistory = []; 
+let chatHistory = [];
 let isSendingMessage = false;
-let isGeminiApiReady = false; 
+let isGeminiApiReady = false;
+let updateActiveApiKeyIndicator = () => {};
 
 // Flag e armazenamento para dados financeiros para a IA
 let hasConsultedFinancialData = false;
@@ -208,85 +209,85 @@ function markNotificationAsSentToday() {
  * @returns {Promise<object>} - O resultado da API em caso de sucesso.
  * @throws {Error} - Se todas as chaves falharem.
  */
-async function tryNextApiKey(payload, attemptIndex = 0) {
+const GEMINI_API_VERSION = 'v1beta';
+const GEMINI_MODEL = 'gemini-1.5-flash-latest';
+const GEMINI_TIMEOUT_MS = 30000;
+
+function getPrimaryGeminiApiKeyMetadata() {
     const validKeyEntries = geminiApiKeys
         .map((key, index) => ({ key: key ? key.trim() : '', originalIndex: index }))
         .filter(entry => entry.key !== '');
 
     if (validKeyEntries.length === 0) {
+        return null;
+    }
+
+    const primary = validKeyEntries[0];
+    return {
+        ...primary,
+        displayIndex: 1,
+        total: validKeyEntries.length,
+    };
+}
+
+async function callGeminiApi(payload) {
+    const primaryKeyMetadata = getPrimaryGeminiApiKeyMetadata();
+
+    if (!primaryKeyMetadata) {
         throw new Error("Nenhuma chave de API configurada. Adicione pelo menos uma chave válida nas configurações.");
     }
 
-    if (attemptIndex >= validKeyEntries.length) {
-        throw new Error("Todas as chaves de API falharam ou estão sem cota.");
-    }
+    const apiUrl = `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${GEMINI_MODEL}:generateContent?key=${primaryKeyMetadata.key}`;
+    const abortController = new AbortController();
+    const timeoutHandle = setTimeout(() => abortController.abort(), GEMINI_TIMEOUT_MS);
 
-    const { key: apiKey, originalIndex } = validKeyEntries[attemptIndex];
-    const apiVersionsToTry = ['v1', 'v1beta'];
-    const modelsToTry = ['gemini-1.5-flash-latest', 'gemini-1.5-flash'];
-    const maxRetriesPerModel = 3;
+    try {
+        const response = await fetch(apiUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            signal: abortController.signal,
+        });
 
-    for (const version of apiVersionsToTry) {
-        for (const model of modelsToTry) {
-            let retryCount = 0;
+        clearTimeout(timeoutHandle);
 
-            while (retryCount < maxRetriesPerModel) {
-                const apiUrl = `https://generativelanguage.googleapis.com/${version}/models/${model}:generateContent?key=${apiKey}`;
-                console.log(`Tentando API com a chave ${attemptIndex + 1} (Versão ${version}, Modelo ${model}, Tentativa ${retryCount + 1})...`);
-
-                try {
-                    const response = await fetch(apiUrl, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
-                    });
-
-                    let parsedBody = null;
-                    try {
-                        parsedBody = await response.json();
-                    } catch (parseError) {
-                        parsedBody = null;
-                    }
-
-                    if (!response.ok) {
-                        const errorMessage = parsedBody && parsedBody.error && parsedBody.error.message
-                            ? parsedBody.error.message
-                            : response.statusText;
-                        console.error(`Erro da API com a chave ${attemptIndex + 1} (${version}/${model}):`, errorMessage);
-
-                        if ((response.status === 429 || response.status === 503) && retryCount < maxRetriesPerModel - 1) {
-                            const delay = Math.pow(2, retryCount) * 1000 + Math.random() * 1000;
-                            console.warn(`Serviço sobrecarregado. Tentando novamente a chave ${attemptIndex + 1} em ${Math.round(delay / 1000)}s.`);
-                            await new Promise(resolve => setTimeout(resolve, delay));
-                            retryCount++;
-                            continue; // Tenta novamente a mesma combinação de versão/modelo
-                        }
-
-                        if (response.status === 404) {
-                            console.warn(`Modelo ${model} indisponível na versão ${version}. Tentando alternativa...`);
-                            break; // Sai do loop de retentativas para tentar o próximo modelo
-                        }
-
-                        if (response.status === 400 || response.status === 403) {
-                            console.warn(`Chave ${attemptIndex + 1} inválida ou sem permissão. Pulando para a próxima chave.`);
-                            return tryNextApiKey(payload, attemptIndex + 1);
-                        }
-
-                        // Outros erros: tenta o próximo modelo ou versão
-                        break;
-                    }
-
-                    const result = parsedBody || {};
-                    currentGeminiApiKeyIndex = originalIndex;
-                    updateActiveApiKeyIndicator();
-                    return result;
-
-                } catch (error) {
-                    console.error(`Erro de rede ou desconhecido com a chave ${attemptIndex + 1} (${version}/${model}):`, error);
-                    break; // Sai do loop de retentativas para tentar próxima combinação
-                }
-            }
+        let parsedBody = {};
+        try {
+            parsedBody = await response.json();
+        } catch (parseError) {
+            parsedBody = {};
         }
+
+        if (!response.ok) {
+            const apiMessage = parsedBody?.error?.message || response.statusText || 'Erro desconhecido da API Gemini.';
+
+            if (response.status === 401 || response.status === 403) {
+                throw new Error('A chave da API Gemini não é válida ou não possui permissão para usar o modelo selecionado.');
+            }
+
+            if (response.status === 404) {
+                throw new Error('O modelo gemini-1.5-flash-latest não está disponível para esta chave de API. Verifique se sua conta possui acesso ao modelo ou gere uma nova chave no Google AI Studio.');
+            }
+
+            if (response.status === 429) {
+                throw new Error('Limite de requisições da API Gemini atingido. Aguarde alguns instantes e tente novamente.');
+            }
+
+            throw new Error(apiMessage);
+        }
+
+        currentGeminiApiKeyIndex = primaryKeyMetadata.originalIndex;
+        updateActiveApiKeyIndicator();
+
+        return parsedBody;
+    } catch (error) {
+        clearTimeout(timeoutHandle);
+
+        if (error.name === 'AbortError') {
+            throw new Error('Tempo limite ao comunicar com a API Gemini. Verifique sua conexão e tente novamente.');
+        }
+
+        throw error;
     }
 
     console.warn(`Nenhuma combinação de versão/modelo funcionou para a chave ${attemptIndex + 1}. Tentando a próxima chave.`);
@@ -349,7 +350,7 @@ async function checkAndSendDailyNotification() {
     
     let aiInsight = 'Abra o app para ver seus insights.'; // Mensagem padrão
     try {
-        const result = await tryNextApiKey(payload);
+        const result = await callGeminiApi(payload);
         if (result.candidates && result.candidates[0].content.parts[0].text) {
             aiInsight = result.candidates[0].content.parts[0].text.trim();
         }
@@ -831,12 +832,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                 isGeminiApiReady = false;
                 console.log("Chaves de API Gemini não encontradas no Firestore.");
             }
+            updateActiveApiKeyIndicator();
             updateChatUIState();
         }, (error) => {
             console.error("Erro ao carregar Chaves de API Gemini do Firestore:", error);
             geminiApiKeys = [];
             updateApiModalStatus(`Erro ao carregar chaves de API: ${error.message}`, "error");
             isGeminiApiReady = false;
+            updateActiveApiKeyIndicator();
             updateChatUIState();
         });
 
@@ -1021,12 +1024,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                 geminiApiKeys = keysToSave; // Atualiza o array local
                 updateApiModalStatus("Chaves de API salvas com sucesso!", "success");
                 isGeminiApiReady = geminiApiKeys.some(key => key.trim() !== '');
+                updateActiveApiKeyIndicator();
                 updateChatUIState();
                 console.log("Chaves de API Gemini salvas no Firestore.");
             }
         } catch (error) {
             console.error("Erro ao salvar Chaves de API Gemini no Firestore:", error);
             updateApiModalStatus(`Erro ao salvar chaves de API: ${error.message}`, "error");
+            updateActiveApiKeyIndicator();
         }
     }
     // --- FIM das Funções de Persistência (Firebase Firestore) ---
@@ -2159,7 +2164,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // --- Funções de Chat e IA ---
     
     // Função para atualizar o indicador visual da chave de API ativa
-    function updateActiveApiKeyIndicator() {
+    updateActiveApiKeyIndicator = function() {
         const validKeyEntries = geminiApiKeys
             .map((key, index) => ({ key: key ? key.trim() : '', originalIndex: index }))
             .filter(entry => entry.key !== '');
@@ -2172,9 +2177,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         const activePosition = validKeyEntries.findIndex(entry => entry.originalIndex === currentGeminiApiKeyIndex);
         const displayIndex = activePosition >= 0 ? activePosition + 1 : 1;
 
-        activeApiKeyIndicator.textContent = `Chave ${displayIndex}/${validKeyEntries.length}`;
+        activeApiKeyIndicator.textContent = `Chave ativa ${displayIndex}/${validKeyEntries.length}`;
         activeApiKeyIndicator.classList.remove('hidden');
-    }
+    };
 
     function appendMessage(sender, text, type = 'text') {
         const messageDiv = document.createElement('div');
@@ -2262,7 +2267,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         };
 
         try {
-            let result = await tryNextApiKey(payload);
+            let result = await callGeminiApi(payload);
         
             if (result && result.candidates && result.candidates[0].content.parts[0].text) {
                 const finalResponse = result.candidates[0].content.parts[0].text;
@@ -2339,7 +2344,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         };
 
         try {
-            const result = await tryNextApiKey(payload);
+            const result = await callGeminiApi(payload);
 
             if (result.candidates && result.candidates.length > 0 &&
                 result.candidates[0].content && result.candidates[0].content.parts &&
@@ -2412,7 +2417,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         };
 
         try {
-            const result = await tryNextApiKey(payload);
+            const result = await callGeminiApi(payload);
             
             if (result.candidates && result.candidates.length > 0 &&
                 result.candidates[0].content && result.candidates[0].content.parts &&
@@ -3376,7 +3381,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         };
 
         try {
-            const result = await tryNextApiKey(payload);
+            const result = await callGeminiApi(payload);
             if (!result.candidates || !result.candidates[0].content.parts[0].text) {
                 throw new Error("Resposta da IA inválida ao otimizar categorias.");
             }
@@ -3701,7 +3706,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         };
 
         try {
-            const result = await tryNextApiKey(payload);
+            const result = await callGeminiApi(payload);
             if (!result.candidates || !result.candidates[0].content.parts[0].text) {
                 throw new Error("Resposta da IA inválida ao analisar despesas.");
             }

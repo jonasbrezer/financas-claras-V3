@@ -205,64 +205,92 @@ function markNotificationAsSentToday() {
  * Se a chave falhar com um erro de cota, tenta a próxima chave na lista.
  * @param {object} payload - O corpo da requisição para a API Gemini.
  * @param {number} attemptIndex - O índice da chave a ser tentada.
- * @param {number} retryCount - O número de tentativas já feitas para esta chave.
  * @returns {Promise<object>} - O resultado da API em caso de sucesso.
  * @throws {Error} - Se todas as chaves falharem.
  */
-async function tryNextApiKey(payload, attemptIndex = 0, retryCount = 0) {
-    const validKeys = geminiApiKeys.filter(key => key && key.trim() !== '');
-    if (attemptIndex >= validKeys.length) {
+async function tryNextApiKey(payload, attemptIndex = 0) {
+    const validKeyEntries = geminiApiKeys
+        .map((key, index) => ({ key: key ? key.trim() : '', originalIndex: index }))
+        .filter(entry => entry.key !== '');
+
+    if (validKeyEntries.length === 0) {
+        throw new Error("Nenhuma chave de API configurada. Adicione pelo menos uma chave válida nas configurações.");
+    }
+
+    if (attemptIndex >= validKeyEntries.length) {
         throw new Error("Todas as chaves de API falharam ou estão sem cota.");
     }
 
-    const apiKey = validKeys[attemptIndex];
-    const model = payload.generationConfig && payload.generationConfig.response_mime_type === "application/json" ? "gemini-1.5-flash-latest" : "gemini-1.5-flash-latest";
-    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-    
-    console.log(`Tentando API com a chave ${attemptIndex + 1} (Tentativa ${retryCount + 1}) e modelo ${model}...`);
+    const { key: apiKey, originalIndex } = validKeyEntries[attemptIndex];
+    const apiVersionsToTry = ['v1', 'v1beta'];
+    const modelsToTry = ['gemini-1.5-flash-latest', 'gemini-1.5-flash'];
+    const maxRetriesPerModel = 3;
 
-    try {
-        const response = await fetch(apiUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
+    for (const version of apiVersionsToTry) {
+        for (const model of modelsToTry) {
+            let retryCount = 0;
 
-        if (!response.ok) {
-            const errorResult = await response.json();
-            const errorMessage = errorResult.error ? errorResult.error.message : response.statusText;
-            console.error(`Erro da API com a chave ${attemptIndex + 1}:`, errorMessage);
+            while (retryCount < maxRetriesPerModel) {
+                const apiUrl = `https://generativelanguage.googleapis.com/${version}/models/${model}:generateContent?key=${apiKey}`;
+                console.log(`Tentando API com a chave ${attemptIndex + 1} (Versão ${version}, Modelo ${model}, Tentativa ${retryCount + 1})...`);
 
-            // Erros que indicam que devemos tentar a PRÓXIMA chave imediatamente (ex: chave inválida, suspensa)
-            if (response.status === 400 || response.status === 403) {
-                 console.warn(`Chave ${attemptIndex + 1} inválida ou suspensa. Pulando para a próxima.`);
-                 return tryNextApiKey(payload, attemptIndex + 1, 0); // Tenta a próxima chave, reseta a contagem de retentativas
+                try {
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    let parsedBody = null;
+                    try {
+                        parsedBody = await response.json();
+                    } catch (parseError) {
+                        parsedBody = null;
+                    }
+
+                    if (!response.ok) {
+                        const errorMessage = parsedBody && parsedBody.error && parsedBody.error.message
+                            ? parsedBody.error.message
+                            : response.statusText;
+                        console.error(`Erro da API com a chave ${attemptIndex + 1} (${version}/${model}):`, errorMessage);
+
+                        if ((response.status === 429 || response.status === 503) && retryCount < maxRetriesPerModel - 1) {
+                            const delay = Math.pow(2, retryCount) * 1000 + Math.random() * 1000;
+                            console.warn(`Serviço sobrecarregado. Tentando novamente a chave ${attemptIndex + 1} em ${Math.round(delay / 1000)}s.`);
+                            await new Promise(resolve => setTimeout(resolve, delay));
+                            retryCount++;
+                            continue; // Tenta novamente a mesma combinação de versão/modelo
+                        }
+
+                        if (response.status === 404) {
+                            console.warn(`Modelo ${model} indisponível na versão ${version}. Tentando alternativa...`);
+                            break; // Sai do loop de retentativas para tentar o próximo modelo
+                        }
+
+                        if (response.status === 400 || response.status === 403) {
+                            console.warn(`Chave ${attemptIndex + 1} inválida ou sem permissão. Pulando para a próxima chave.`);
+                            return tryNextApiKey(payload, attemptIndex + 1);
+                        }
+
+                        // Outros erros: tenta o próximo modelo ou versão
+                        break;
+                    }
+
+                    const result = parsedBody || {};
+                    currentGeminiApiKeyIndex = originalIndex;
+                    updateActiveApiKeyIndicator();
+                    return result;
+
+                } catch (error) {
+                    console.error(`Erro de rede ou desconhecido com a chave ${attemptIndex + 1} (${version}/${model}):`, error);
+                    break; // Sai do loop de retentativas para tentar próxima combinação
+                }
             }
-
-            // Erros que indicam que devemos TENTAR NOVAMENTE a MESMA chave (ex: sobrecarga, erro de servidor)
-            if ((response.status === 429 || response.status === 503) && retryCount < 3) {
-                const delay = Math.pow(2, retryCount) * 1000 + Math.random() * 1000; // Exponential backoff
-                console.warn(`Serviço sobrecarregado. Tentando novamente a chave ${attemptIndex + 1} em ${Math.round(delay/1000)}s.`);
-                await new Promise(resolve => setTimeout(resolve, delay));
-                return tryNextApiKey(payload, attemptIndex, retryCount + 1); // Tenta a mesma chave novamente
-            }
-            
-            // Se as retentativas falharam para esta chave, tenta a próxima
-            return tryNextApiKey(payload, attemptIndex + 1, 0);
         }
-
-        const result = await response.json();
-        
-        // Se a chave funcionou, atualiza o índice global e o indicador visual
-        currentGeminiApiKeyIndex = geminiApiKeys.indexOf(apiKey);
-        updateActiveApiKeyIndicator();
-        return result; // Retorna o resultado bem-sucedido
-
-    } catch (error) {
-        console.error(`Erro de rede ou desconhecido com a chave ${attemptIndex + 1}:`, error);
-        // Em caso de erro de rede, tenta a próxima chave
-        return tryNextApiKey(payload, attemptIndex + 1, 0);
     }
+
+    console.warn(`Nenhuma combinação de versão/modelo funcionou para a chave ${attemptIndex + 1}. Tentando a próxima chave.`);
+    return tryNextApiKey(payload, attemptIndex + 1);
 }
 
 
@@ -2132,13 +2160,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     
     // Função para atualizar o indicador visual da chave de API ativa
     function updateActiveApiKeyIndicator() {
-        const validKeys = geminiApiKeys.filter(key => key && key.trim() !== '');
-        if (validKeys.length > 0) {
-            activeApiKeyIndicator.textContent = `Chave ${currentGeminiApiKeyIndex + 1}/${validKeys.length}`;
-            activeApiKeyIndicator.classList.remove('hidden');
-        } else {
+        const validKeyEntries = geminiApiKeys
+            .map((key, index) => ({ key: key ? key.trim() : '', originalIndex: index }))
+            .filter(entry => entry.key !== '');
+
+        if (validKeyEntries.length === 0) {
             activeApiKeyIndicator.classList.add('hidden');
+            return;
         }
+
+        const activePosition = validKeyEntries.findIndex(entry => entry.originalIndex === currentGeminiApiKeyIndex);
+        const displayIndex = activePosition >= 0 ? activePosition + 1 : 1;
+
+        activeApiKeyIndicator.textContent = `Chave ${displayIndex}/${validKeyEntries.length}`;
+        activeApiKeyIndicator.classList.remove('hidden');
     }
 
     function appendMessage(sender, text, type = 'text') {

@@ -289,6 +289,9 @@ async function callGeminiApi(payload) {
 
         throw error;
     }
+
+    console.warn(`Nenhuma combinação de versão/modelo funcionou para a chave ${attemptIndex + 1}. Tentando a próxima chave.`);
+    return tryNextApiKey(payload, attemptIndex + 1);
 }
 
 

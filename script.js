@@ -210,8 +210,15 @@ function markNotificationAsSentToday() {
  * @throws {Error} - Se todas as chaves falharem.
  */
 const GEMINI_API_VERSION = 'v1beta';
-const GEMINI_MODEL = 'gemini-1.5-flash-latest';
+const GEMINI_MODEL_CANDIDATES = [
+    'gemini-1.5-flash-latest',
+    'gemini-1.5-flash',
+    'gemini-1.0-pro-latest',
+    'gemini-1.0-pro',
+    'gemini-pro',
+];
 const GEMINI_TIMEOUT_MS = 30000;
+let resolvedGeminiModel = null;
 
 function getPrimaryGeminiApiKeyMetadata() {
     const validKeyEntries = geminiApiKeys
@@ -230,14 +237,8 @@ function getPrimaryGeminiApiKeyMetadata() {
     };
 }
 
-async function callGeminiApi(payload) {
-    const primaryKeyMetadata = getPrimaryGeminiApiKeyMetadata();
-
-    if (!primaryKeyMetadata) {
-        throw new Error("Nenhuma chave de API configurada. Adicione pelo menos uma chave válida nas configurações.");
-    }
-
-    const apiUrl = `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${GEMINI_MODEL}:generateContent?key=${primaryKeyMetadata.key}`;
+async function executeGeminiRequest(apiKey, model, payload) {
+    const apiUrl = `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${model}:generateContent?key=${apiKey}`;
     const abortController = new AbortController();
     const timeoutHandle = setTimeout(() => abortController.abort(), GEMINI_TIMEOUT_MS);
 
@@ -249,8 +250,6 @@ async function callGeminiApi(payload) {
             signal: abortController.signal,
         });
 
-        clearTimeout(timeoutHandle);
-
         let parsedBody = {};
         try {
             parsedBody = await response.json();
@@ -260,38 +259,86 @@ async function callGeminiApi(payload) {
 
         if (!response.ok) {
             const apiMessage = parsedBody?.error?.message || response.statusText || 'Erro desconhecido da API Gemini.';
-
-            if (response.status === 401 || response.status === 403) {
-                throw new Error('A chave da API Gemini não é válida ou não possui permissão para usar o modelo selecionado.');
-            }
-
-            if (response.status === 404) {
-                throw new Error('O modelo gemini-1.5-flash-latest não está disponível para esta chave de API. Verifique se sua conta possui acesso ao modelo ou gere uma nova chave no Google AI Studio.');
-            }
-
-            if (response.status === 429) {
-                throw new Error('Limite de requisições da API Gemini atingido. Aguarde alguns instantes e tente novamente.');
-            }
-
-            throw new Error(apiMessage);
+            const apiError = new Error(apiMessage);
+            apiError.status = response.status;
+            apiError.model = model;
+            throw apiError;
         }
-
-        currentGeminiApiKeyIndex = primaryKeyMetadata.originalIndex;
-        updateActiveApiKeyIndicator();
 
         return parsedBody;
     } catch (error) {
-        clearTimeout(timeoutHandle);
-
         if (error.name === 'AbortError') {
-            throw new Error('Tempo limite ao comunicar com a API Gemini. Verifique sua conexão e tente novamente.');
+            const timeoutError = new Error('Tempo limite ao comunicar com a API Gemini. Verifique sua conexão e tente novamente.');
+            timeoutError.isTimeout = true;
+            throw timeoutError;
         }
 
-        throw error;
+        if (error.status) {
+            throw error;
+        }
+
+        const networkError = new Error('Não foi possível se comunicar com a API Gemini. Verifique sua conexão e tente novamente.');
+        networkError.isNetworkError = true;
+        networkError.originalError = error;
+        throw networkError;
+    } finally {
+        clearTimeout(timeoutHandle);
+    }
+}
+
+async function callGeminiApi(payload) {
+    const primaryKeyMetadata = getPrimaryGeminiApiKeyMetadata();
+
+    if (!primaryKeyMetadata) {
+        throw new Error("Nenhuma chave de API configurada. Adicione pelo menos uma chave válida nas configurações.");
     }
 
-    console.warn(`Nenhuma combinação de versão/modelo funcionou para a chave ${attemptIndex + 1}. Tentando a próxima chave.`);
-    return tryNextApiKey(payload, attemptIndex + 1);
+    const modelsToTry = resolvedGeminiModel
+        ? [resolvedGeminiModel, ...GEMINI_MODEL_CANDIDATES.filter(model => model !== resolvedGeminiModel)]
+        : [...GEMINI_MODEL_CANDIDATES];
+
+    const unavailableModels = [];
+
+    for (const modelName of modelsToTry) {
+        try {
+            const result = await executeGeminiRequest(primaryKeyMetadata.key, modelName, payload);
+            resolvedGeminiModel = modelName;
+            currentGeminiApiKeyIndex = primaryKeyMetadata.originalIndex;
+            updateActiveApiKeyIndicator();
+            return result;
+        } catch (error) {
+            if (error.isTimeout || error.isNetworkError) {
+                throw error;
+            }
+
+            if (error.status === 401 || error.status === 403) {
+                throw new Error('A chave da API Gemini não é válida ou não possui permissão para usar o modelo selecionado.');
+            }
+
+            if (error.status === 429) {
+                throw new Error('Limite de requisições da API Gemini atingido. Aguarde alguns instantes e tente novamente.');
+            }
+
+            if (error.status === 404) {
+                unavailableModels.push(modelName);
+                if (resolvedGeminiModel === modelName) {
+                    resolvedGeminiModel = null;
+                    updateActiveApiKeyIndicator();
+                }
+                console.warn(`Modelo ${modelName} indisponível para a chave atual. Tentando alternativa...`);
+                continue;
+            }
+
+            throw new Error(error.message || 'Erro desconhecido ao chamar a API Gemini.');
+        }
+    }
+
+    if (unavailableModels.length > 0) {
+        const formattedModels = unavailableModels.join(', ');
+        throw new Error(`Nenhum dos modelos compatíveis (${formattedModels}) está habilitado para esta chave de API. Confirme no Google AI Studio quais modelos estão liberados e atualize as configurações do app.`);
+    }
+
+    throw new Error('Não foi possível se comunicar com a API Gemini. Verifique sua conexão e tente novamente.');
 }
 
 
@@ -818,6 +865,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         onSnapshot(getUserDocumentRef('settings', 'geminiApiKeys'), (docSnap) => {
             if (docSnap.exists() && docSnap.data().keys && Array.isArray(docSnap.data().keys)) {
                 geminiApiKeys = docSnap.data().keys;
+                resolvedGeminiModel = null;
                 // Popula os campos do modal com as chaves salvas
                 modalApiKeyInputs.forEach((input, index) => {
                     input.value = geminiApiKeys[index] || '';
@@ -827,6 +875,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 console.log("Chaves de API Gemini carregadas do Firestore.");
             } else {
                 geminiApiKeys = [];
+                resolvedGeminiModel = null;
                 modalApiKeyInputs.forEach(input => input.value = ''); // Limpa os campos
                 updateApiModalStatus("Nenhuma chave de API salva ainda. Por favor, insira e salve.", "info");
                 isGeminiApiReady = false;
@@ -837,6 +886,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         }, (error) => {
             console.error("Erro ao carregar Chaves de API Gemini do Firestore:", error);
             geminiApiKeys = [];
+            resolvedGeminiModel = null;
             updateApiModalStatus(`Erro ao carregar chaves de API: ${error.message}`, "error");
             isGeminiApiReady = false;
             updateActiveApiKeyIndicator();
@@ -1022,6 +1072,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (apiKeyRef) {
                 await setDoc(apiKeyRef, { keys: keysToSave });
                 geminiApiKeys = keysToSave; // Atualiza o array local
+                resolvedGeminiModel = null;
                 updateApiModalStatus("Chaves de API salvas com sucesso!", "success");
                 isGeminiApiReady = geminiApiKeys.some(key => key.trim() !== '');
                 updateActiveApiKeyIndicator();
@@ -2176,8 +2227,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         const activePosition = validKeyEntries.findIndex(entry => entry.originalIndex === currentGeminiApiKeyIndex);
         const displayIndex = activePosition >= 0 ? activePosition + 1 : 1;
+        const modelLabel = resolvedGeminiModel ? ` · Modelo ${resolvedGeminiModel}` : '';
 
-        activeApiKeyIndicator.textContent = `Chave ativa ${displayIndex}/${validKeyEntries.length}`;
+        activeApiKeyIndicator.textContent = `Chave ativa ${displayIndex}/${validKeyEntries.length}${modelLabel}`;
         activeApiKeyIndicator.classList.remove('hidden');
     };
 
@@ -2250,7 +2302,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         contentsPayload.push({ role: "user", parts: [{ text: userPromptWithData }] });
         
         const payload = {
-            systemInstruction: { role: "system", parts: [{ text: baseSystemInstruction }] },
+            system_instruction: { role: "system", parts: [{ text: baseSystemInstruction }] },
             contents: contentsPayload, 
             generationConfig: {
                 temperature: 0.7, 

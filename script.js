@@ -43,6 +43,7 @@ let isSendingMessage = false;
 let isGeminiApiReady = false;
 let updateActiveApiKeyIndicator = () => {};
 let availableGeminiModels = null;
+let unavailableGeminiModels = new Set();
 
 // Flag e armazenamento para dados financeiros para a IA
 let hasConsultedFinancialData = false;
@@ -210,7 +211,16 @@ function markNotificationAsSentToday() {
  * @throws {Error} - Se todas as chaves falharem.
  */
 const GEMINI_API_VERSION = 'v1beta';
-const GEMINI_MODEL_CANDIDATES = [
+const GEMINI_MODEL_COMPATIBILITY_LABELS = [
+    'gemini-2.5-flash',
+    'gemini-2.5-flash-lite',
+    'gemini-2.5-pro',
+    'gemini-2.0-flash',
+    'gemini-2.0-flash-lite',
+    'gemini-2.0-pro',
+    'gemini-flash-latest',
+    'gemini-flash-lite-latest',
+    'gemini-pro-latest',
     'gemini-1.5-flash-latest',
     'gemini-1.5-flash',
     'gemini-1.0-pro-latest',
@@ -220,15 +230,79 @@ const GEMINI_MODEL_CANDIDATES = [
 const GEMINI_TIMEOUT_MS = 30000;
 let resolvedGeminiModel = null;
 
-function clearGeminiModelResolution() {
+function clearGeminiModelResolution(options = {}) {
+    const { preserveUnavailable = false } = options;
     resolvedGeminiModel = null;
     availableGeminiModels = null;
+    if (!preserveUnavailable) {
+        unavailableGeminiModels.clear();
+    }
     updateActiveApiKeyIndicator();
 }
 
 function getActiveGeminiApiKey() {
     const trimmedKey = geminiApiKey ? geminiApiKey.trim() : '';
     return trimmedKey || null;
+}
+
+function isTextGenerationModelName(modelName) {
+    if (!modelName) {
+        return false;
+    }
+
+    const lowerCaseName = modelName.toLowerCase();
+
+    if (!lowerCaseName.startsWith('gemini')) {
+        return false;
+    }
+
+    if (/embedding|image|vision|tts|audio|speech|computer-use|robotics|aqa/.test(lowerCaseName)) {
+        return false;
+    }
+
+    return true;
+}
+
+function scoreGeminiModel(modelName) {
+    if (!modelName) {
+        return 0;
+    }
+
+    const name = modelName.toLowerCase();
+
+    if (/gemini-2\.5-flash-lite/.test(name)) return 115;
+    if (/gemini-2\.5-flash/.test(name)) return 120;
+    if (/gemini-2\.5-pro/.test(name)) return 110;
+    if (/gemini-2\.0-flash-lite/.test(name)) return 95;
+    if (/gemini-2\.0-flash/.test(name)) return 100;
+    if (/gemini-2\.0-pro/.test(name)) return 90;
+    if (/gemini-flash-latest/.test(name)) return 80;
+    if (/gemini-pro-latest/.test(name)) return 70;
+    if (/flash-lite/.test(name)) return 65;
+    if (/gemini-1\.5-flash/.test(name)) return 60;
+    if (/gemini-1\.0-pro/.test(name)) return 50;
+    if (/gemini-pro/.test(name)) return 40;
+    if (/flash/.test(name)) return 30;
+    if (/pro/.test(name)) return 20;
+
+    return 10;
+}
+
+function selectBestGeminiModel(modelsSet) {
+    if (!modelsSet || modelsSet.size === 0) {
+        return null;
+    }
+
+    const candidates = Array.from(modelsSet).filter(modelName => {
+        return isTextGenerationModelName(modelName) && !unavailableGeminiModels.has(modelName);
+    });
+
+    if (candidates.length === 0) {
+        return null;
+    }
+
+    candidates.sort((a, b) => scoreGeminiModel(b) - scoreGeminiModel(a));
+    return candidates[0];
 }
 
 async function executeGeminiRequest(apiKey, model, payload) {
@@ -300,11 +374,38 @@ async function fetchSupportedGeminiModels(apiKey) {
     }
 
     const returnedModels = Array.isArray(parsedBody.models) ? parsedBody.models : [];
-    const normalizedModels = new Set(
-        returnedModels
-            .map(modelInfo => (modelInfo?.name || '').replace(/^models\//, '').trim())
-            .filter(Boolean)
-    );
+    const normalizedModels = new Set();
+
+    returnedModels.forEach(modelInfo => {
+        const rawName = modelInfo?.name || '';
+        const normalizedName = rawName.replace(/^models\//, '').trim();
+
+        if (!normalizedName) {
+            return;
+        }
+
+        const supportedMethods = Array.isArray(modelInfo?.supportedGenerationMethods)
+            ? modelInfo.supportedGenerationMethods
+            : [];
+
+        if (!supportedMethods.includes('generateContent')) {
+            return;
+        }
+
+        if (!isTextGenerationModelName(normalizedName)) {
+            return;
+        }
+
+        normalizedModels.add(normalizedName);
+    });
+
+    if (unavailableGeminiModels.size > 0) {
+        for (const modelName of Array.from(unavailableGeminiModels)) {
+            if (!normalizedModels.has(modelName)) {
+                unavailableGeminiModels.delete(modelName);
+            }
+        }
+    }
 
     availableGeminiModels = normalizedModels;
     return normalizedModels;
@@ -316,11 +417,12 @@ async function ensureGeminiModelResolved(apiKey) {
     }
 
     const models = availableGeminiModels || await fetchSupportedGeminiModels(apiKey);
-    const compatibleModel = GEMINI_MODEL_CANDIDATES.find(candidate => models.has(candidate));
+    const compatibleModel = selectBestGeminiModel(models);
 
     if (!compatibleModel) {
-        const compatibleList = GEMINI_MODEL_CANDIDATES.join(', ');
-        const availableList = models.size > 0 ? ` Modelos disponíveis para esta chave: ${Array.from(models).join(', ')}.` : '';
+        const compatibleList = GEMINI_MODEL_COMPATIBILITY_LABELS.join(', ');
+        const availableModels = Array.from(models).sort();
+        const availableList = availableModels.length > 0 ? ` Modelos disponíveis para esta chave: ${availableModels.join(', ')}.` : '';
         throw new Error(`Nenhum dos modelos compatíveis (${compatibleList}) está habilitado para esta chave de API.${availableList} Confirme no Google AI Studio quais modelos estão liberados e atualize as configurações do app.`);
     }
 
@@ -357,7 +459,10 @@ async function callGeminiApi(payload) {
             if (error.status === 404) {
                 if (attempt === 0) {
                     console.warn('Modelo resolvido indisponível para esta chave. Atualizando lista de modelos e tentando novamente...');
-                    clearGeminiModelResolution();
+                    if (error.model) {
+                        unavailableGeminiModels.add(error.model);
+                    }
+                    clearGeminiModelResolution({ preserveUnavailable: true });
                     try {
                         await fetchSupportedGeminiModels(activeApiKey);
                     } catch (fetchError) {
@@ -372,8 +477,14 @@ async function callGeminiApi(payload) {
                     continue;
                 }
 
-                const compatibleList = GEMINI_MODEL_CANDIDATES.join(', ');
-                throw new Error(`Nenhum dos modelos compatíveis (${compatibleList}) está habilitado para esta chave de API. Confirme no Google AI Studio quais modelos estão liberados e atualize as configurações do app.`);
+                if (error.model) {
+                    unavailableGeminiModels.add(error.model);
+                }
+                clearGeminiModelResolution({ preserveUnavailable: true });
+                const availableModels = Array.from(availableGeminiModels || []).sort();
+                const compatibleList = GEMINI_MODEL_COMPATIBILITY_LABELS.join(', ');
+                const availableList = availableModels.length > 0 ? ` Modelos disponíveis para esta chave: ${availableModels.join(', ')}.` : '';
+                throw new Error(`Nenhum dos modelos compatíveis (${compatibleList}) está habilitado para esta chave de API.${availableList} Confirme no Google AI Studio quais modelos estão liberados e atualize as configurações do app.`);
             }
 
             throw new Error(error.message || 'Erro desconhecido ao chamar a API Gemini.');

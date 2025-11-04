@@ -42,6 +42,7 @@ let chatHistory = [];
 let isSendingMessage = false;
 let isGeminiApiReady = false;
 let updateActiveApiKeyIndicator = () => {};
+let availableGeminiModels = null;
 
 // Flag e armazenamento para dados financeiros para a IA
 let hasConsultedFinancialData = false;
@@ -219,6 +220,12 @@ const GEMINI_MODEL_CANDIDATES = [
 const GEMINI_TIMEOUT_MS = 30000;
 let resolvedGeminiModel = null;
 
+function clearGeminiModelResolution() {
+    resolvedGeminiModel = null;
+    availableGeminiModels = null;
+    updateActiveApiKeyIndicator();
+}
+
 function getActiveGeminiApiKey() {
     const trimmedKey = geminiApiKey ? geminiApiKey.trim() : '';
     return trimmedKey || null;
@@ -273,6 +280,55 @@ async function executeGeminiRequest(apiKey, model, payload) {
     }
 }
 
+async function fetchSupportedGeminiModels(apiKey) {
+    const modelsUrl = `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models?key=${apiKey}`;
+
+    const response = await fetch(modelsUrl);
+    let parsedBody = {};
+
+    try {
+        parsedBody = await response.json();
+    } catch (parseError) {
+        parsedBody = {};
+    }
+
+    if (!response.ok) {
+        const apiMessage = parsedBody?.error?.message || response.statusText || 'Erro desconhecido da API Gemini.';
+        const apiError = new Error(apiMessage);
+        apiError.status = response.status;
+        throw apiError;
+    }
+
+    const returnedModels = Array.isArray(parsedBody.models) ? parsedBody.models : [];
+    const normalizedModels = new Set(
+        returnedModels
+            .map(modelInfo => (modelInfo?.name || '').replace(/^models\//, '').trim())
+            .filter(Boolean)
+    );
+
+    availableGeminiModels = normalizedModels;
+    return normalizedModels;
+}
+
+async function ensureGeminiModelResolved(apiKey) {
+    if (resolvedGeminiModel) {
+        return resolvedGeminiModel;
+    }
+
+    const models = availableGeminiModels || await fetchSupportedGeminiModels(apiKey);
+    const compatibleModel = GEMINI_MODEL_CANDIDATES.find(candidate => models.has(candidate));
+
+    if (!compatibleModel) {
+        const compatibleList = GEMINI_MODEL_CANDIDATES.join(', ');
+        const availableList = models.size > 0 ? ` Modelos disponíveis para esta chave: ${Array.from(models).join(', ')}.` : '';
+        throw new Error(`Nenhum dos modelos compatíveis (${compatibleList}) está habilitado para esta chave de API.${availableList} Confirme no Google AI Studio quais modelos estão liberados e atualize as configurações do app.`);
+    }
+
+    resolvedGeminiModel = compatibleModel;
+    updateActiveApiKeyIndicator();
+    return resolvedGeminiModel;
+}
+
 async function callGeminiApi(payload) {
     const activeApiKey = getActiveGeminiApiKey();
 
@@ -280,24 +336,17 @@ async function callGeminiApi(payload) {
         throw new Error("Nenhuma chave de API configurada. Adicione uma chave válida nas configurações.");
     }
 
-    const modelsToTry = resolvedGeminiModel
-        ? [resolvedGeminiModel, ...GEMINI_MODEL_CANDIDATES.filter(model => model !== resolvedGeminiModel)]
-        : [...GEMINI_MODEL_CANDIDATES];
-
-    const unavailableModels = [];
-
-    for (const modelName of modelsToTry) {
+    for (let attempt = 0; attempt < 2; attempt++) {
         try {
-            const result = await executeGeminiRequest(activeApiKey, modelName, payload);
-            resolvedGeminiModel = modelName;
-            updateActiveApiKeyIndicator();
-            return result;
+            const modelName = await ensureGeminiModelResolved(activeApiKey);
+            return await executeGeminiRequest(activeApiKey, modelName, payload);
         } catch (error) {
             if (error.isTimeout || error.isNetworkError) {
                 throw error;
             }
 
             if (error.status === 401 || error.status === 403) {
+                clearGeminiModelResolution();
                 throw new Error('A chave da API Gemini não é válida ou não possui permissão para usar o modelo selecionado.');
             }
 
@@ -306,22 +355,29 @@ async function callGeminiApi(payload) {
             }
 
             if (error.status === 404) {
-                unavailableModels.push(modelName);
-                if (resolvedGeminiModel === modelName) {
-                    resolvedGeminiModel = null;
-                    updateActiveApiKeyIndicator();
+                if (attempt === 0) {
+                    console.warn('Modelo resolvido indisponível para esta chave. Atualizando lista de modelos e tentando novamente...');
+                    clearGeminiModelResolution();
+                    try {
+                        await fetchSupportedGeminiModels(activeApiKey);
+                    } catch (fetchError) {
+                        if (fetchError.status === 401 || fetchError.status === 403) {
+                            throw new Error('A chave da API Gemini não é válida ou não possui permissão para usar o modelo selecionado.');
+                        }
+                        if (fetchError.status === 429) {
+                            throw new Error('Limite de requisições da API Gemini atingido. Aguarde alguns instantes e tente novamente.');
+                        }
+                        throw new Error(fetchError.message || 'Erro ao validar os modelos disponíveis para a chave informada.');
+                    }
+                    continue;
                 }
-                console.warn(`Modelo ${modelName} indisponível para a chave atual. Tentando alternativa...`);
-                continue;
+
+                const compatibleList = GEMINI_MODEL_CANDIDATES.join(', ');
+                throw new Error(`Nenhum dos modelos compatíveis (${compatibleList}) está habilitado para esta chave de API. Confirme no Google AI Studio quais modelos estão liberados e atualize as configurações do app.`);
             }
 
             throw new Error(error.message || 'Erro desconhecido ao chamar a API Gemini.');
         }
-    }
-
-    if (unavailableModels.length > 0) {
-        const formattedModels = unavailableModels.join(', ');
-        throw new Error(`Nenhum dos modelos compatíveis (${formattedModels}) está habilitado para esta chave de API. Confirme no Google AI Studio quais modelos estão liberados e atualize as configurações do app.`);
     }
 
     throw new Error('Não foi possível se comunicar com a API Gemini. Verifique sua conexão e tente novamente.');
@@ -852,7 +908,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         : '';
 
                 geminiApiKey = loadedKey;
-                resolvedGeminiModel = null;
+                clearGeminiModelResolution();
                 if (modalApiKeyInput) {
                     modalApiKeyInput.value = geminiApiKey;
                 }
@@ -868,7 +924,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             } else {
                 geminiApiKey = '';
-                resolvedGeminiModel = null;
+                clearGeminiModelResolution();
                 if (modalApiKeyInput) {
                     modalApiKeyInput.value = '';
                 }
@@ -881,7 +937,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         }, (error) => {
             console.error("Erro ao carregar Chave de API Gemini do Firestore:", error);
             geminiApiKey = '';
-            resolvedGeminiModel = null;
+            clearGeminiModelResolution();
             updateApiModalStatus(`Erro ao carregar chave de API: ${error.message}`, "error");
             isGeminiApiReady = false;
             updateActiveApiKeyIndicator();
@@ -1067,7 +1123,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (apiKeyRef) {
                 await setDoc(apiKeyRef, { key: keyToSave, keys: [] }, { merge: true });
                 geminiApiKey = keyToSave;
-                resolvedGeminiModel = null;
+                clearGeminiModelResolution();
                 updateApiModalStatus("Chave de API salva com sucesso!", "success");
                 isGeminiApiReady = true;
                 updateActiveApiKeyIndicator();

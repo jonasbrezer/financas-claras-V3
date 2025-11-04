@@ -305,6 +305,29 @@ function selectBestGeminiModel(modelsSet) {
     return candidates[0];
 }
 
+function extractFirstGeminiText(response) {
+    if (!response || !Array.isArray(response.candidates)) {
+        return null;
+    }
+
+    for (const candidate of response.candidates) {
+        if (!candidate || !candidate.content || !Array.isArray(candidate.content.parts)) {
+            continue;
+        }
+
+        for (const part of candidate.content.parts) {
+            if (part && typeof part.text === 'string') {
+                const trimmed = part.text.trim();
+                if (trimmed) {
+                    return trimmed;
+                }
+            }
+        }
+    }
+
+    return null;
+}
+
 async function executeGeminiRequest(apiKey, model, payload) {
     const apiUrl = `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${model}:generateContent?key=${apiKey}`;
     const abortController = new AbortController();
@@ -551,8 +574,9 @@ async function checkAndSendDailyNotification() {
     let aiInsight = 'Abra o app para ver seus insights.'; // Mensagem padrão
     try {
         const result = await callGeminiApi(payload);
-        if (result.candidates && result.candidates[0].content.parts[0].text) {
-            aiInsight = result.candidates[0].content.parts[0].text.trim();
+        const insightText = extractFirstGeminiText(result);
+        if (insightText) {
+            aiInsight = insightText;
         }
     } catch (error) {
         console.error("Erro ao gerar insight para notificação:", error);
@@ -2482,16 +2506,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         try {
             let result = await callGeminiApi(payload);
-        
-            if (result && result.candidates && result.candidates[0].content.parts[0].text) {
-                const finalResponse = result.candidates[0].content.parts[0].text;
+
+            const finalResponse = extractFirstGeminiText(result);
+            if (finalResponse) {
                 appendMessage('ai', finalResponse);
-                chatHistory.push({ role: "user", parts: [{ text: userMessage }] }); 
+                chatHistory.push({ role: "user", parts: [{ text: userMessage }] });
                 chatHistory.push({ role: "model", parts: [{ text: finalResponse }] });
-            } else if (result.error) {
+            } else if (result && result.error) {
                 throw new Error(result.error.message || 'Erro desconhecido da API Gemini.');
-            } else if (!result.candidates || result.candidates.length === 0) {
-                 throw new Error('Não foi possível obter uma resposta válida da IA.');
+            } else {
+                throw new Error('Não foi possível obter uma resposta válida da IA.');
             }
 
         } catch (error) {
@@ -2559,13 +2583,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         try {
             const result = await callGeminiApi(payload);
+            const aiResponseText = extractFirstGeminiText(result);
 
-            if (result.candidates && result.candidates.length > 0 &&
-                result.candidates[0].content && result.candidates[0].content.parts &&
-                result.candidates[0].content.parts.length > 0 && result.candidates[0].content.parts[0].text) {
-                const aiResponseText = result.candidates[0].content.parts[0].text;
+            if (aiResponseText) {
                 insightsContentArea.innerHTML = aiResponseText;
-            } else if (result.error) {
+            } else if (result && result.error) {
                 insightsContentArea.innerHTML = `<p class="text-red-500">Erro da API: ${result.error.message || 'Erro desconhecido da API Gemini.'}</p>`;
                 console.error('Erro da API Gemini para Insights:', result.error);
             } else {
@@ -2632,13 +2654,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         try {
             const result = await callGeminiApi(payload);
-            
-            if (result.candidates && result.candidates.length > 0 &&
-                result.candidates[0].content && result.candidates[0].content.parts &&
-                result.candidates[0].content.parts.length > 0 && result.candidates[0].content.parts[0].text) {
-                const aiResponseText = result.candidates[0].content.parts[0].text;
+            const aiResponseText = extractFirstGeminiText(result);
+
+            if (aiResponseText) {
                 budgetOptimizationText.innerHTML = aiResponseText;
-            } else if (result.error) {
+            } else if (result && result.error) {
                 budgetOptimizationText.innerHTML = `<p class="text-red-500">Erro da API: ${result.error.message || 'Erro desconhecido da API Gemini.'}</p>`;
                 console.error('Erro da API Gemini para Otimização de Orçamento:', result.error);
             } else {
@@ -3596,10 +3616,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         try {
             const result = await callGeminiApi(payload);
-            if (!result.candidates || !result.candidates[0].content.parts[0].text) {
+            const suggestionsText = extractFirstGeminiText(result);
+            if (!suggestionsText) {
                 throw new Error("Resposta da IA inválida ao otimizar categorias.");
             }
-            const suggestions = JSON.parse(result.candidates[0].content.parts[0].text);
+            const suggestions = JSON.parse(suggestionsText);
             categoryOptimizationSuggestionsStore = suggestions; // Armazena as sugestões
             renderCategoryOptimizationSuggestions(suggestions);
         } catch (error) {
@@ -3921,10 +3942,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         try {
             const result = await callGeminiApi(payload);
-            if (!result.candidates || !result.candidates[0].content.parts[0].text) {
+            const newExpensesText = extractFirstGeminiText(result);
+            if (!newExpensesText) {
                 throw new Error("Resposta da IA inválida ao analisar despesas.");
             }
-            const newExpenses = JSON.parse(result.candidates[0].content.parts[0].text);
+            const newExpenses = JSON.parse(newExpensesText);
             
             closeExpenseParserModal();
 

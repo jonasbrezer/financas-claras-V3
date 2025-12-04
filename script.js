@@ -2,19 +2,20 @@
 
 // Importa os módulos necessários do Firebase
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+import { getAuth, signOut, onAuthStateChanged, signInWithCustomToken, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 import { getFirestore, doc, setDoc, getDoc, collection, query, orderBy, onSnapshot, addDoc, updateDoc, deleteDoc, writeBatch, where, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
 // Variáveis globais do ambiente Canvas (preenchidas em tempo de execução)
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 // ATENÇÃO: Firebase Config agora está hardcoded com as credenciais fornecidas pelo usuário.
 const firebaseConfig = {
-    apiKey: "AIzaSyBEuFW_VQEx_smJUOxCsF0Jug_lnzUA2aw",
-    authDomain: "offline-d2e68.firebaseapp.com",
-    projectId: "offline-d2e68",
-    storageBucket: "offline-d2e68.firebasestorage.app",
-    messagingSenderId: "524684058670",
-    appId: "1:524684058670:web:5141130aee53e059cc7fbf"
+    apiKey: "AIzaSyClC5yXSpGsZ5SRGT2Gii80KnhqkmDO498",
+    authDomain: "meuacessor-54145.firebaseapp.com",
+    projectId: "meuacessor-54145",
+    storageBucket: "meuacessor-54145.firebasestorage.app",
+    messagingSenderId: "974060139250",
+    appId: "1:974060139250:web:4417bf25f014e5c012966b",
+    measurementId: "G-XJP67B38RN"
 };
 const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
@@ -22,13 +23,125 @@ const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial
 let app;
 let db;
 let auth;
-let userId = null; 
-let isAuthReady = false; 
+let userId = null;
+let isAuthReady = false;
+let isGuestMode = false;
+
+// Persistência local para funcionamento em modo convidado
+const LOCAL_STORAGE_KEYS = {
+    categories: 'fc_local_categories',
+    transactions: 'fc_local_transactions',
+    budgets: 'fc_local_budgets'
+};
+
+// Preenche o app com dados fictícios quando o Firestore não está disponível.
+function seedDemoDataIfEmpty() {
+    if (!isGuestMode) return false;
+
+    const hasLocalData = (categories && categories.length) || (transactions && transactions.length) || (budgets && budgets.length);
+    if (hasLocalData) return false;
+
+    const today = new Date();
+    const currentMonthLabel = getCurrentMonthYYYYMM(today);
+    const previousMonthLabel = getCurrentMonthYYYYMM(new Date(today.getFullYear(), today.getMonth() - 1, 1));
+    const twoMonthsAgoLabel = getCurrentMonthYYYYMM(new Date(today.getFullYear(), today.getMonth() - 2, 1));
+
+    // Categorias (incluindo caixinhas)
+    categories = [
+        { id: 'cat-salario', name: 'Salário CLT', type: 'income', color: '#2ecc71' },
+        { id: 'cat-freela', name: 'Projetos Freelance', type: 'income', color: '#00b894' },
+        { id: 'cat-aluguel', name: 'Aluguel', type: 'expense', priority: 'essential', color: '#3498db' },
+        { id: 'cat-mercado', name: 'Mercado & Higiene', type: 'expense', priority: 'essential', color: '#2980b9' },
+        { id: 'cat-contas', name: 'Contas Domésticas', type: 'expense', priority: 'essential', color: '#8e44ad' },
+        { id: 'cat-transporte', name: 'Transporte', type: 'expense', priority: 'essential', color: '#34495e' },
+        { id: 'cat-lazer', name: 'Lazer & Streaming', type: 'expense', priority: 'non-essential', color: '#e67e22' },
+        { id: 'cat-restaurantes', name: 'Restaurantes', type: 'expense', priority: 'non-essential', color: '#f1c40f' },
+        { id: 'cat-caixinha-reserva', name: 'Reserva de Emergência', type: 'caixinha', color: '#81ecec', savedAmount: 3500, targetAmount: 5000 },
+        { id: 'cat-caixinha-viagem', name: 'Viagem dos Sonhos', type: 'caixinha', color: '#a29bfe', savedAmount: 1850, targetAmount: 6000 },
+    ];
+
+    // Transações de demonstração espalhadas por 3 meses para alimentar gráficos
+    transactions = [
+        // Receitas atuais
+        { id: 'txn-salario', description: 'Salário Líquido', amount: 8500, date: `${currentMonthLabel}-05`, type: 'income', status: 'Recebido', categoryId: 'cat-salario' },
+        { id: 'txn-freela', description: 'Website para cliente local', amount: 2200, date: `${currentMonthLabel}-15`, type: 'income', status: 'Recebido', categoryId: 'cat-freela' },
+
+        // Despesas essenciais do mês corrente
+        { id: 'txn-aluguel', description: 'Aluguel do apartamento', amount: 2200, date: `${currentMonthLabel}-01`, type: 'expense', status: 'Pago', categoryId: 'cat-aluguel' },
+        { id: 'txn-mercado', description: 'Compra mensal no mercado', amount: 820, date: `${currentMonthLabel}-06`, type: 'expense', status: 'Pago', categoryId: 'cat-mercado' },
+        { id: 'txn-mercado2', description: 'Reposição de hortifrúti', amount: 210, date: `${currentMonthLabel}-14`, type: 'expense', status: 'Pago', categoryId: 'cat-mercado' },
+        { id: 'txn-contas', description: 'Conta de energia e água', amount: 430, date: `${currentMonthLabel}-08`, type: 'expense', status: 'Pago', categoryId: 'cat-contas' },
+        { id: 'txn-transporte', description: 'Transporte e app de corrida', amount: 260, date: `${currentMonthLabel}-11`, type: 'expense', status: 'Pago', categoryId: 'cat-transporte' },
+
+        // Despesas não essenciais / pendentes
+        { id: 'txn-lazer', description: 'Renovação streaming + cinema', amount: 180, date: `${currentMonthLabel}-18`, type: 'expense', status: 'Pago', categoryId: 'cat-lazer' },
+        { id: 'txn-restaurante', description: 'Jantar com amigos', amount: 240, date: `${currentMonthLabel}-22`, type: 'expense', status: 'Pendente', categoryId: 'cat-restaurantes' },
+        { id: 'txn-mercado-pendente', description: 'Compra rápida do fim do mês', amount: 350, date: `${currentMonthLabel}-28`, type: 'expense', status: 'Pendente', categoryId: 'cat-mercado' },
+
+        // Movimentações de caixinha
+        { id: 'txn-caixinha-dep', description: 'Depósito automático', amount: 600, date: `${currentMonthLabel}-10`, type: 'caixinha', transactionType: 'deposit', status: 'Confirmado', categoryId: 'cat-caixinha-reserva' },
+        { id: 'txn-caixinha-resgate', description: 'Reserva usada para manutenção', amount: 250, date: `${currentMonthLabel}-12`, type: 'caixinha', transactionType: 'withdraw', status: 'Confirmado', categoryId: 'cat-caixinha-reserva' },
+
+        // Receitas e despesas do mês anterior
+        { id: 'txn-salario-prev', description: 'Salário Líquido', amount: 8300, date: `${previousMonthLabel}-05`, type: 'income', status: 'Recebido', categoryId: 'cat-salario' },
+        { id: 'txn-mercado-prev', description: 'Compras do mês anterior', amount: 760, date: `${previousMonthLabel}-07`, type: 'expense', status: 'Pago', categoryId: 'cat-mercado' },
+        { id: 'txn-lazer-prev', description: 'Show ao vivo', amount: 420, date: `${previousMonthLabel}-19`, type: 'expense', status: 'Pago', categoryId: 'cat-lazer' },
+
+        // Receitas e despesas de dois meses atrás (para gráficos de evolução)
+        { id: 'txn-salario-older', description: 'Salário Líquido', amount: 8200, date: `${twoMonthsAgoLabel}-05`, type: 'income', status: 'Recebido', categoryId: 'cat-salario' },
+        { id: 'txn-contas-older', description: 'Contas fixas', amount: 410, date: `${twoMonthsAgoLabel}-09`, type: 'expense', status: 'Pago', categoryId: 'cat-contas' },
+        { id: 'txn-restaurante-older', description: 'Restaurante especial', amount: 260, date: `${twoMonthsAgoLabel}-21`, type: 'expense', status: 'Pago', categoryId: 'cat-restaurantes' },
+    ];
+
+    // Orçamentos do mês corrente
+    budgets = [
+        { id: 'budget-mercado', categoryId: 'cat-mercado', amount: 1200, month: currentMonthLabel },
+        { id: 'budget-lazer', categoryId: 'cat-lazer', amount: 600, month: currentMonthLabel },
+        { id: 'budget-contas', categoryId: 'cat-contas', amount: 500, month: currentMonthLabel },
+    ];
+
+    saveLocalData();
+    showToast('Dados de demonstração carregados para navegação offline.', 'info');
+    return true;
+}
+
+function loadLocalData() {
+    const storedCategories = localStorage.getItem(LOCAL_STORAGE_KEYS.categories);
+    const storedTransactions = localStorage.getItem(LOCAL_STORAGE_KEYS.transactions);
+    const storedBudgets = localStorage.getItem(LOCAL_STORAGE_KEYS.budgets);
+
+    categories = storedCategories ? JSON.parse(storedCategories) : [];
+    transactions = storedTransactions ? JSON.parse(storedTransactions) : [];
+    budgets = storedBudgets ? JSON.parse(storedBudgets) : [];
+
+    seedDemoDataIfEmpty();
+
+    renderCategories(categorySearchInput.value);
+    updateDashboardAndTransactionSummaries();
+    renderChart();
+    populateFilterCategories();
+    renderBudgets();
+}
+
+function saveLocalData() {
+    localStorage.setItem(LOCAL_STORAGE_KEYS.categories, JSON.stringify(categories || []));
+    localStorage.setItem(LOCAL_STORAGE_KEYS.transactions, JSON.stringify(transactions || []));
+    localStorage.setItem(LOCAL_STORAGE_KEYS.budgets, JSON.stringify(budgets || []));
+}
+
+function handleFirestorePermissionError(error, contextMessage = '') {
+    if (error?.code === 'permission-denied') {
+        console.warn(`Permissão negada no Firestore durante ${contextMessage}. Migrando para modo convidado.`);
+        showToast('Sem permissão no Firestore. Atualize as regras no console ou use o modo convidado.', 'error');
+        startGuestMode();
+    }
+}
 
 // Arrays para armazenar os dados do usuário
-let categories = []; 
+let categories = [];
 let transactions = [];
-let budgets = []; 
+let budgets = [];
+let hasAttemptedAnonymousSignIn = false;
 
 // Configurações da IA (ATUALIZADO)
 let aiConfig = {
@@ -701,10 +814,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Elementos da Tela de Login
     const loginScreen = document.getElementById('login-screen');
-    const loginForm = document.getElementById('login-form');
-    const loginEmailInput = document.getElementById('login-email');
-    const loginPasswordInput = document.getElementById('login-password');
-    const loginErrorMessage = document.getElementById('login-error-message');
     const appContent = document.getElementById('app-content');
     const bodyEl = document.querySelector('body');
 
@@ -969,6 +1078,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Carrega todos os dados do Firestore
     async function loadAllDataFromFirestore() {
+        if (isGuestMode) {
+            console.warn("Modo convidado ativo. Carregando dados locais em vez do Firestore.");
+            loadLocalData();
+            return;
+        }
         if (!isAuthReady || !userId) {
             console.warn("Autenticação não pronta ou userId ausente para carregar dados do Firestore. Abortando load.");
             return;
@@ -995,6 +1109,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }, (error) => {
             console.error("Erro ao carregar AI Config do Firestore:", error);
+            handleFirestorePermissionError(error, 'ler configurações de IA');
         });
 
         // Listener para Categorias (que agora incluem Caixinhas) - Usa getUserDocumentRef
@@ -1017,6 +1132,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }, (error) => {
             console.error("Erro ao carregar Categorias do Firestore:", error);
+            handleFirestorePermissionError(error, 'ler categorias');
         });
 
         // Listener para Orçamentos - Usa getUserDocumentRef
@@ -1033,6 +1149,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }, (error) => {
             console.error("Erro ao carregar Orçamentos do Firestore:", error);
+            handleFirestorePermissionError(error, 'ler orçamentos');
         });
 
         // Listener para Chave de API Gemini
@@ -1085,19 +1202,20 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Listener para Transações - Usa getUserCollectionRef
         const transactionsColRef = getUserCollectionRef('transactions');
         if (transactionsColRef) { 
-            onSnapshot(query(transactionsColRef, orderBy('date', 'desc')), (querySnapshot) => {
-                transactions = [];
-                querySnapshot.forEach((doc) => {
-                    transactions.push({ id: doc.id, ...doc.data() });
-                });
-                console.log("Transações carregadas do Firestore.");
-                renderTransactions();
-                updateDashboardAndTransactionSummaries();
-                renderChart();
-                checkAndSendDailyNotification(); // Checa por notificações após carregar transações
-            }, (error) => {
-                console.error("Erro ao carregar Transações do Firestore:", error);
+        onSnapshot(query(transactionsColRef, orderBy('date', 'desc')), (querySnapshot) => {
+            transactions = [];
+            querySnapshot.forEach((doc) => {
+                transactions.push({ id: doc.id, ...doc.data() });
             });
+            console.log("Transações carregadas do Firestore.");
+            renderTransactions();
+            updateDashboardAndTransactionSummaries();
+            renderChart();
+            checkAndSendDailyNotification(); // Checa por notificações após carregar transações
+        }, (error) => {
+            console.error("Erro ao carregar Transações do Firestore:", error);
+            handleFirestorePermissionError(error, 'ler transações');
+        });
         }
     }
 
@@ -1135,26 +1253,27 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Salva categorias no Firestore (como um único documento com array)
     // Agora lida com categorias normais e caixinhas
     async function saveCategories() {
-        if (!isAuthReady || !userId) { 
-            console.warn("saveCategories: Autenticação não pronta ou userId ausente. Tentando salvar localmente por agora.");
-            showToast('Erro: Autenticação não pronta para salvar no banco.', 'error');
-            return; 
+        if (isGuestMode || !isAuthReady || !userId) {
+            console.warn("saveCategories: Modo convidado ou autenticação indisponível. Salvando localmente.");
+            saveLocalData();
+            return;
         }
         try {
             const userCategoriesRef = getUserDocumentRef('categories', 'userCategories');
             if (userCategoriesRef) {
-                await setDoc(userCategoriesRef, { items: categories || [] }); 
+                await setDoc(userCategoriesRef, { items: categories || [] });
                 console.log("saveCategories: Categorias e Caixinhas salvas com sucesso no Firestore!");
             }
         } catch (error) {
             console.error("saveCategories: Erro ao salvar Categorias no Firestore:", error);
+            handleFirestorePermissionError(error, 'salvar categorias');
             showToast(`Erro ao salvar categoria: ${error.message}`, 'error');
         }
     }
 
     // Salva uma transação individual ou um grupo de transações no Firestore (adicione ou atualize)
     async function saveTransaction(transactionData, installments = 1) {
-        if (!isAuthReady || !userId) { console.warn("Autenticação não pronta ou userId ausente."); return; }
+        if (isGuestMode || !isAuthReady || !userId) { console.warn("Autenticação indisponível; salvando transações localmente."); saveLocalData(); return; }
         
         try {
             const transactionsColRef = getUserCollectionRef('transactions');
@@ -1229,7 +1348,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Salva orçamentos no Firestore (como um único documento com array)
     async function saveBudgets() {
-        if (!isAuthReady || !userId) { console.warn("Autenticação não pronta ou userId ausente."); return; }
+        if (isGuestMode || !isAuthReady || !userId) { console.warn("Autenticação indisponível; salvando orçamentos localmente."); saveLocalData(); return; }
         try {
             const userBudgetsRef = getUserDocumentRef('budgets', 'userBudgets');
             if (userBudgetsRef) {
@@ -1238,6 +1357,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         } catch (error) {
             console.error("Erro ao salvar Orçamentos:", error);
+            handleFirestorePermissionError(error, 'salvar orçamentos');
             showToast(`Erro ao salvar orçamento: ${error.message}`, 'error');
         }
     }
@@ -2709,6 +2829,30 @@ document.addEventListener('DOMContentLoaded', async () => {
         }, 5000);
     }
 
+    function startGuestMode() {
+        if (loginScreen) {
+            loginScreen.classList.add('hidden');
+        }
+        isGuestMode = true;
+        userId = localStorage.getItem('guestUserId');
+        if (!userId) {
+            userId = `guest-${generateUUID()}`;
+            localStorage.setItem('guestUserId', userId);
+        }
+        isAuthReady = true;
+
+        loadLocalData();
+
+        if (window.getComputedStyle(splashScreen).display !== 'none') {
+            showSplashScreen();
+        } else {
+            appContent.classList.remove('hidden');
+            showPage('dashboard');
+        }
+
+        showToast('Modo convidado ativado. Os dados ficam apenas neste dispositivo.', 'info');
+    }
+
     // --- Configuração e Inicialização do Firebase ---
     async function initializeFirebase() {
         try {
@@ -2720,28 +2864,43 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             onAuthStateChanged(auth, async (user) => {
                 if (user) {
-                    // Usuário está logado (seja por token, e-mail/senha, ou sessão anterior)
+                    // Usuário está logado (seja por token, e-mail/senha, sessão anterior ou anônimo)
                     userId = user.uid;
                     isAuthReady = true;
-                    loginScreen.classList.add('hidden');
+                    isGuestMode = false;
+                    if (loginScreen) {
+                        loginScreen.classList.add('hidden');
+                    }
                     console.log("Usuário autenticado:", userId);
                     await loadAllDataFromFirestore();
                     // Lógica para decidir entre splash e app content
                     if (window.getComputedStyle(splashScreen).display !== 'none') {
-                        showSplashScreen(); 
+                        showSplashScreen();
                     } else {
                         // Se splash estiver oculto (desktop), mostra o app direto
                         appContent.classList.remove('hidden');
                         showPage('dashboard');
                     }
                 } else {
-                    // Nenhum usuário logado
+                    // Nenhum usuário logado: tenta acesso anônimo e, se falhar, cai para modo convidado local
                     userId = null;
                     isAuthReady = false;
                     splashScreen.classList.add('hidden');
                     appContent.classList.add('hidden');
-                    loginScreen.classList.remove('hidden'); // MOSTRA A TELA DE LOGIN
-                    console.log("Usuário não autenticado. Mostrando tela de login.");
+                    console.log("Nenhum usuário autenticado. Tentando login anônimo.");
+                    try {
+                        if (!hasAttemptedAnonymousSignIn) {
+                            hasAttemptedAnonymousSignIn = true;
+                            await signInAnonymously(auth);
+                            console.log("Autenticado anonimamente com Firebase.");
+                        }
+                    } catch (anonError) {
+                        console.error("Falha no login anônimo:", anonError);
+                        if (anonError?.code === 'auth/configuration-not-found') {
+                            showToast('Ative o login anônimo no Firebase Authentication para salvar no banco.', 'error');
+                        }
+                        startGuestMode();
+                    }
                 }
             });
 
@@ -2752,48 +2911,29 @@ document.addEventListener('DOMContentLoaded', async () => {
                     console.log("Autenticação com token inicial bem-sucedida.");
                 } catch (error) {
                     console.error("Falha na autenticação com o token inicial.", error);
-                    let errorMessage = `Erro de autenticação: ${error.message}.`;
-                    if (error.code === 'auth/custom-token-mismatch' || error.code === 'auth/invalid-custom-token') {
-                        errorMessage += " Verifique as configurações do Firebase ou gere um novo token.";
-                    }
-                    loginErrorMessage.textContent = errorMessage;
-                    loginErrorMessage.classList.remove('hidden');
+                    showToast('Erro de autenticação automática. Iniciando modo convidado.', 'error');
+                    startGuestMode();
                 }
             } else if (!auth.currentUser) {
-                 // Não faz nada se não houver token e nenhum usuário. O login será exibido pelo onAuthStateChanged.
-                console.log("Nenhum token inicial e nenhum usuário logado. Aguardando interação.");
+                try {
+                    if (!hasAttemptedAnonymousSignIn) {
+                        hasAttemptedAnonymousSignIn = true;
+                        await signInAnonymously(auth);
+                        console.log("Autenticação anônima iniciada por ausência de token.");
+                    }
+                } catch (anonError) {
+                    console.error("Falha no login anônimo inicial:", anonError);
+                    if (anonError?.code === 'auth/configuration-not-found') {
+                        showToast('Ative o login anônimo no Firebase Authentication para salvar no banco.', 'error');
+                    }
+                    startGuestMode();
+                }
             }
 
         } catch (error) {
             console.error("Erro ao inicializar Firebase:", error);
-            loginErrorMessage.textContent = `Erro crítico ao iniciar a aplicação: ${error.message}`;
-            loginErrorMessage.classList.remove('hidden');
+            startGuestMode();
         }
-    }
-
-    // Event listener para o formulário de login
-    if (loginForm) {
-        loginForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const email = loginEmailInput.value;
-            const password = loginPasswordInput.value;
-            try {
-                await signInWithEmailAndPassword(auth, email, password);
-                loginErrorMessage.classList.add('hidden'); // Limpa a mensagem de erro se o login for bem-sucedido
-            } catch (error) {
-                let message = 'Erro ao fazer login. Verifique o seu e-mail e palavra-passe.';
-                if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password' || error.code === 'auth/invalid-credential') {
-                    message = 'E-mail ou palavra-passe inválidos.';
-                } else if (error.code === 'auth/invalid-email') {
-                    message = 'Formato de e-mail inválido.';
-                } else if (error.code === 'auth/operation-not-allowed') {
-                    message = 'A operação de login por e-mail/palavra-passe não está ativada no seu projeto Firebase.';
-                }
-                loginErrorMessage.textContent = message;
-                loginErrorMessage.classList.remove('hidden');
-                console.error("Erro de login:", error.message, error.code);
-            }
-        });
     }
 
     // Event listener para o botão de logout (desktop)

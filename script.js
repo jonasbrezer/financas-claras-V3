@@ -9,12 +9,13 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, orderBy, onSnapsh
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 // ATENÇÃO: Firebase Config agora está hardcoded com as credenciais fornecidas pelo usuário.
 const firebaseConfig = {
-    apiKey: "AIzaSyBEuFW_VQEx_smJUOxCsF0Jug_lnzUA2aw",
-    authDomain: "offline-d2e68.firebaseapp.com",
-    projectId: "offline-d2e68",
-    storageBucket: "offline-d2e68.firebasestorage.app",
-    messagingSenderId: "524684058670",
-    appId: "1:524684058670:web:5141130aee53e059cc7fbf"
+    apiKey: "AIzaSyClC5yXSpGsZ5SRGT2Gii80KnhqkmDO498",
+    authDomain: "meuacessor-54145.firebaseapp.com",
+    projectId: "meuacessor-54145",
+    storageBucket: "meuacessor-54145.firebasestorage.app",
+    messagingSenderId: "974060139250",
+    appId: "1:974060139250:web:4417bf25f014e5c012966b",
+    measurementId: "G-XJP67B38RN"
 };
 const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 

@@ -2,19 +2,20 @@
 
 // Importa os módulos necessários do Firebase
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+import { getAuth, signOut, onAuthStateChanged, signInWithCustomToken, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 import { getFirestore, doc, setDoc, getDoc, collection, query, orderBy, onSnapshot, addDoc, updateDoc, deleteDoc, writeBatch, where, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
 // Variáveis globais do ambiente Canvas (preenchidas em tempo de execução)
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 // ATENÇÃO: Firebase Config agora está hardcoded com as credenciais fornecidas pelo usuário.
 const firebaseConfig = {
-    apiKey: "AIzaSyBEuFW_VQEx_smJUOxCsF0Jug_lnzUA2aw",
-    authDomain: "offline-d2e68.firebaseapp.com",
-    projectId: "offline-d2e68",
-    storageBucket: "offline-d2e68.firebasestorage.app",
-    messagingSenderId: "524684058670",
-    appId: "1:524684058670:web:5141130aee53e059cc7fbf"
+    apiKey: "AIzaSyClC5yXSpGsZ5SRGT2Gii80KnhqkmDO498",
+    authDomain: "meuacessor-54145.firebaseapp.com",
+    projectId: "meuacessor-54145",
+    storageBucket: "meuacessor-54145.firebasestorage.app",
+    messagingSenderId: "974060139250",
+    appId: "1:974060139250:web:4417bf25f014e5c012966b",
+    measurementId: "G-XJP67B38RN"
 };
 const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
@@ -701,10 +702,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Elementos da Tela de Login
     const loginScreen = document.getElementById('login-screen');
-    const loginForm = document.getElementById('login-form');
-    const loginEmailInput = document.getElementById('login-email');
-    const loginPasswordInput = document.getElementById('login-password');
-    const loginErrorMessage = document.getElementById('login-error-message');
     const appContent = document.getElementById('app-content');
     const bodyEl = document.querySelector('body');
 
@@ -2709,6 +2706,27 @@ document.addEventListener('DOMContentLoaded', async () => {
         }, 5000);
     }
 
+    function startGuestMode() {
+        if (loginScreen) {
+            loginScreen.classList.add('hidden');
+        }
+        userId = localStorage.getItem('guestUserId');
+        if (!userId) {
+            userId = `guest-${generateUUID()}`;
+            localStorage.setItem('guestUserId', userId);
+        }
+        isAuthReady = true;
+
+        if (window.getComputedStyle(splashScreen).display !== 'none') {
+            showSplashScreen();
+        } else {
+            appContent.classList.remove('hidden');
+            showPage('dashboard');
+        }
+
+        showToast('Modo convidado ativado. Os dados ficam apenas neste dispositivo.', 'info');
+    }
+
     // --- Configuração e Inicialização do Firebase ---
     async function initializeFirebase() {
         try {
@@ -2720,28 +2738,36 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             onAuthStateChanged(auth, async (user) => {
                 if (user) {
-                    // Usuário está logado (seja por token, e-mail/senha, ou sessão anterior)
+                    // Usuário está logado (seja por token, e-mail/senha, sessão anterior ou anônimo)
                     userId = user.uid;
                     isAuthReady = true;
-                    loginScreen.classList.add('hidden');
+                    if (loginScreen) {
+                        loginScreen.classList.add('hidden');
+                    }
                     console.log("Usuário autenticado:", userId);
                     await loadAllDataFromFirestore();
                     // Lógica para decidir entre splash e app content
                     if (window.getComputedStyle(splashScreen).display !== 'none') {
-                        showSplashScreen(); 
+                        showSplashScreen();
                     } else {
                         // Se splash estiver oculto (desktop), mostra o app direto
                         appContent.classList.remove('hidden');
                         showPage('dashboard');
                     }
                 } else {
-                    // Nenhum usuário logado
+                    // Nenhum usuário logado: tenta acesso anônimo e, se falhar, cai para modo convidado local
                     userId = null;
                     isAuthReady = false;
                     splashScreen.classList.add('hidden');
                     appContent.classList.add('hidden');
-                    loginScreen.classList.remove('hidden'); // MOSTRA A TELA DE LOGIN
-                    console.log("Usuário não autenticado. Mostrando tela de login.");
+                    console.log("Nenhum usuário autenticado. Tentando login anônimo.");
+                    try {
+                        await signInAnonymously(auth);
+                        console.log("Autenticado anonimamente com Firebase.");
+                    } catch (anonError) {
+                        console.error("Falha no login anônimo:", anonError);
+                        startGuestMode();
+                    }
                 }
             });
 
@@ -2752,48 +2778,23 @@ document.addEventListener('DOMContentLoaded', async () => {
                     console.log("Autenticação com token inicial bem-sucedida.");
                 } catch (error) {
                     console.error("Falha na autenticação com o token inicial.", error);
-                    let errorMessage = `Erro de autenticação: ${error.message}.`;
-                    if (error.code === 'auth/custom-token-mismatch' || error.code === 'auth/invalid-custom-token') {
-                        errorMessage += " Verifique as configurações do Firebase ou gere um novo token.";
-                    }
-                    loginErrorMessage.textContent = errorMessage;
-                    loginErrorMessage.classList.remove('hidden');
+                    showToast('Erro de autenticação automática. Iniciando modo convidado.', 'error');
+                    startGuestMode();
                 }
             } else if (!auth.currentUser) {
-                 // Não faz nada se não houver token e nenhum usuário. O login será exibido pelo onAuthStateChanged.
-                console.log("Nenhum token inicial e nenhum usuário logado. Aguardando interação.");
+                try {
+                    await signInAnonymously(auth);
+                    console.log("Autenticação anônima iniciada por ausência de token.");
+                } catch (anonError) {
+                    console.error("Falha no login anônimo inicial:", anonError);
+                    startGuestMode();
+                }
             }
 
         } catch (error) {
             console.error("Erro ao inicializar Firebase:", error);
-            loginErrorMessage.textContent = `Erro crítico ao iniciar a aplicação: ${error.message}`;
-            loginErrorMessage.classList.remove('hidden');
+            startGuestMode();
         }
-    }
-
-    // Event listener para o formulário de login
-    if (loginForm) {
-        loginForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const email = loginEmailInput.value;
-            const password = loginPasswordInput.value;
-            try {
-                await signInWithEmailAndPassword(auth, email, password);
-                loginErrorMessage.classList.add('hidden'); // Limpa a mensagem de erro se o login for bem-sucedido
-            } catch (error) {
-                let message = 'Erro ao fazer login. Verifique o seu e-mail e palavra-passe.';
-                if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password' || error.code === 'auth/invalid-credential') {
-                    message = 'E-mail ou palavra-passe inválidos.';
-                } else if (error.code === 'auth/invalid-email') {
-                    message = 'Formato de e-mail inválido.';
-                } else if (error.code === 'auth/operation-not-allowed') {
-                    message = 'A operação de login por e-mail/palavra-passe não está ativada no seu projeto Firebase.';
-                }
-                loginErrorMessage.textContent = message;
-                loginErrorMessage.classList.remove('hidden');
-                console.error("Erro de login:", error.message, error.code);
-            }
-        });
     }
 
     // Event listener para o botão de logout (desktop)

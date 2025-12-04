@@ -105,24 +105,6 @@ function seedDemoDataIfEmpty() {
     return true;
 }
 
-function loadLocalData() {
-    const storedCategories = localStorage.getItem(LOCAL_STORAGE_KEYS.categories);
-    const storedTransactions = localStorage.getItem(LOCAL_STORAGE_KEYS.transactions);
-    const storedBudgets = localStorage.getItem(LOCAL_STORAGE_KEYS.budgets);
-
-    categories = storedCategories ? JSON.parse(storedCategories) : [];
-    transactions = storedTransactions ? JSON.parse(storedTransactions) : [];
-    budgets = storedBudgets ? JSON.parse(storedBudgets) : [];
-
-    seedDemoDataIfEmpty();
-
-    renderCategories(categorySearchInput.value);
-    updateDashboardAndTransactionSummaries();
-    renderChart();
-    populateFilterCategories();
-    renderBudgets();
-}
-
 function saveLocalData() {
     localStorage.setItem(LOCAL_STORAGE_KEYS.categories, JSON.stringify(categories || []));
     localStorage.setItem(LOCAL_STORAGE_KEYS.transactions, JSON.stringify(transactions || []));
@@ -1046,7 +1028,25 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Botões de Sair
     const logoutButtonDesktop = document.getElementById('logout-button-desktop');
-    
+
+    function loadLocalData() {
+        const storedCategories = localStorage.getItem(LOCAL_STORAGE_KEYS.categories);
+        const storedTransactions = localStorage.getItem(LOCAL_STORAGE_KEYS.transactions);
+        const storedBudgets = localStorage.getItem(LOCAL_STORAGE_KEYS.budgets);
+
+        categories = storedCategories ? JSON.parse(storedCategories) : [];
+        transactions = storedTransactions ? JSON.parse(storedTransactions) : [];
+        budgets = storedBudgets ? JSON.parse(storedBudgets) : [];
+
+        seedDemoDataIfEmpty();
+
+        renderCategories(categorySearchInput.value);
+        updateDashboardAndTransactionSummaries();
+        renderChart();
+        populateFilterCategories();
+        renderBudgets();
+    }
+
     // NOVO: Elementos do Modal de Otimização de Categorias
     const optimizeCategoriesButton = document.getElementById('optimize-categories-button');
     const categoryOptimizationModal = document.getElementById('category-optimization-modal');

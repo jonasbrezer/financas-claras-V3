@@ -34,6 +34,77 @@ const LOCAL_STORAGE_KEYS = {
     budgets: 'fc_local_budgets'
 };
 
+// Preenche o app com dados fictícios quando o Firestore não está disponível.
+function seedDemoDataIfEmpty() {
+    if (!isGuestMode) return false;
+
+    const hasLocalData = (categories && categories.length) || (transactions && transactions.length) || (budgets && budgets.length);
+    if (hasLocalData) return false;
+
+    const today = new Date();
+    const currentMonthLabel = getCurrentMonthYYYYMM(today);
+    const previousMonthLabel = getCurrentMonthYYYYMM(new Date(today.getFullYear(), today.getMonth() - 1, 1));
+    const twoMonthsAgoLabel = getCurrentMonthYYYYMM(new Date(today.getFullYear(), today.getMonth() - 2, 1));
+
+    // Categorias (incluindo caixinhas)
+    categories = [
+        { id: 'cat-salario', name: 'Salário CLT', type: 'income', color: '#2ecc71' },
+        { id: 'cat-freela', name: 'Projetos Freelance', type: 'income', color: '#00b894' },
+        { id: 'cat-aluguel', name: 'Aluguel', type: 'expense', priority: 'essential', color: '#3498db' },
+        { id: 'cat-mercado', name: 'Mercado & Higiene', type: 'expense', priority: 'essential', color: '#2980b9' },
+        { id: 'cat-contas', name: 'Contas Domésticas', type: 'expense', priority: 'essential', color: '#8e44ad' },
+        { id: 'cat-transporte', name: 'Transporte', type: 'expense', priority: 'essential', color: '#34495e' },
+        { id: 'cat-lazer', name: 'Lazer & Streaming', type: 'expense', priority: 'non-essential', color: '#e67e22' },
+        { id: 'cat-restaurantes', name: 'Restaurantes', type: 'expense', priority: 'non-essential', color: '#f1c40f' },
+        { id: 'cat-caixinha-reserva', name: 'Reserva de Emergência', type: 'caixinha', color: '#81ecec', savedAmount: 3500, targetAmount: 5000 },
+        { id: 'cat-caixinha-viagem', name: 'Viagem dos Sonhos', type: 'caixinha', color: '#a29bfe', savedAmount: 1850, targetAmount: 6000 },
+    ];
+
+    // Transações de demonstração espalhadas por 3 meses para alimentar gráficos
+    transactions = [
+        // Receitas atuais
+        { id: 'txn-salario', description: 'Salário Líquido', amount: 8500, date: `${currentMonthLabel}-05`, type: 'income', status: 'Recebido', categoryId: 'cat-salario' },
+        { id: 'txn-freela', description: 'Website para cliente local', amount: 2200, date: `${currentMonthLabel}-15`, type: 'income', status: 'Recebido', categoryId: 'cat-freela' },
+
+        // Despesas essenciais do mês corrente
+        { id: 'txn-aluguel', description: 'Aluguel do apartamento', amount: 2200, date: `${currentMonthLabel}-01`, type: 'expense', status: 'Pago', categoryId: 'cat-aluguel' },
+        { id: 'txn-mercado', description: 'Compra mensal no mercado', amount: 820, date: `${currentMonthLabel}-06`, type: 'expense', status: 'Pago', categoryId: 'cat-mercado' },
+        { id: 'txn-mercado2', description: 'Reposição de hortifrúti', amount: 210, date: `${currentMonthLabel}-14`, type: 'expense', status: 'Pago', categoryId: 'cat-mercado' },
+        { id: 'txn-contas', description: 'Conta de energia e água', amount: 430, date: `${currentMonthLabel}-08`, type: 'expense', status: 'Pago', categoryId: 'cat-contas' },
+        { id: 'txn-transporte', description: 'Transporte e app de corrida', amount: 260, date: `${currentMonthLabel}-11`, type: 'expense', status: 'Pago', categoryId: 'cat-transporte' },
+
+        // Despesas não essenciais / pendentes
+        { id: 'txn-lazer', description: 'Renovação streaming + cinema', amount: 180, date: `${currentMonthLabel}-18`, type: 'expense', status: 'Pago', categoryId: 'cat-lazer' },
+        { id: 'txn-restaurante', description: 'Jantar com amigos', amount: 240, date: `${currentMonthLabel}-22`, type: 'expense', status: 'Pendente', categoryId: 'cat-restaurantes' },
+        { id: 'txn-mercado-pendente', description: 'Compra rápida do fim do mês', amount: 350, date: `${currentMonthLabel}-28`, type: 'expense', status: 'Pendente', categoryId: 'cat-mercado' },
+
+        // Movimentações de caixinha
+        { id: 'txn-caixinha-dep', description: 'Depósito automático', amount: 600, date: `${currentMonthLabel}-10`, type: 'caixinha', transactionType: 'deposit', status: 'Confirmado', categoryId: 'cat-caixinha-reserva' },
+        { id: 'txn-caixinha-resgate', description: 'Reserva usada para manutenção', amount: 250, date: `${currentMonthLabel}-12`, type: 'caixinha', transactionType: 'withdraw', status: 'Confirmado', categoryId: 'cat-caixinha-reserva' },
+
+        // Receitas e despesas do mês anterior
+        { id: 'txn-salario-prev', description: 'Salário Líquido', amount: 8300, date: `${previousMonthLabel}-05`, type: 'income', status: 'Recebido', categoryId: 'cat-salario' },
+        { id: 'txn-mercado-prev', description: 'Compras do mês anterior', amount: 760, date: `${previousMonthLabel}-07`, type: 'expense', status: 'Pago', categoryId: 'cat-mercado' },
+        { id: 'txn-lazer-prev', description: 'Show ao vivo', amount: 420, date: `${previousMonthLabel}-19`, type: 'expense', status: 'Pago', categoryId: 'cat-lazer' },
+
+        // Receitas e despesas de dois meses atrás (para gráficos de evolução)
+        { id: 'txn-salario-older', description: 'Salário Líquido', amount: 8200, date: `${twoMonthsAgoLabel}-05`, type: 'income', status: 'Recebido', categoryId: 'cat-salario' },
+        { id: 'txn-contas-older', description: 'Contas fixas', amount: 410, date: `${twoMonthsAgoLabel}-09`, type: 'expense', status: 'Pago', categoryId: 'cat-contas' },
+        { id: 'txn-restaurante-older', description: 'Restaurante especial', amount: 260, date: `${twoMonthsAgoLabel}-21`, type: 'expense', status: 'Pago', categoryId: 'cat-restaurantes' },
+    ];
+
+    // Orçamentos do mês corrente
+    budgets = [
+        { id: 'budget-mercado', categoryId: 'cat-mercado', amount: 1200, month: currentMonthLabel },
+        { id: 'budget-lazer', categoryId: 'cat-lazer', amount: 600, month: currentMonthLabel },
+        { id: 'budget-contas', categoryId: 'cat-contas', amount: 500, month: currentMonthLabel },
+    ];
+
+    saveLocalData();
+    showToast('Dados de demonstração carregados para navegação offline.', 'info');
+    return true;
+}
+
 function loadLocalData() {
     const storedCategories = localStorage.getItem(LOCAL_STORAGE_KEYS.categories);
     const storedTransactions = localStorage.getItem(LOCAL_STORAGE_KEYS.transactions);
@@ -42,6 +113,8 @@ function loadLocalData() {
     categories = storedCategories ? JSON.parse(storedCategories) : [];
     transactions = storedTransactions ? JSON.parse(storedTransactions) : [];
     budgets = storedBudgets ? JSON.parse(storedBudgets) : [];
+
+    seedDemoDataIfEmpty();
 
     renderCategories(categorySearchInput.value);
     updateDashboardAndTransactionSummaries();

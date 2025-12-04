@@ -23,13 +23,52 @@ const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial
 let app;
 let db;
 let auth;
-let userId = null; 
-let isAuthReady = false; 
+let userId = null;
+let isAuthReady = false;
+let isGuestMode = false;
+
+// Persistência local para funcionamento em modo convidado
+const LOCAL_STORAGE_KEYS = {
+    categories: 'fc_local_categories',
+    transactions: 'fc_local_transactions',
+    budgets: 'fc_local_budgets'
+};
+
+function loadLocalData() {
+    const storedCategories = localStorage.getItem(LOCAL_STORAGE_KEYS.categories);
+    const storedTransactions = localStorage.getItem(LOCAL_STORAGE_KEYS.transactions);
+    const storedBudgets = localStorage.getItem(LOCAL_STORAGE_KEYS.budgets);
+
+    categories = storedCategories ? JSON.parse(storedCategories) : [];
+    transactions = storedTransactions ? JSON.parse(storedTransactions) : [];
+    budgets = storedBudgets ? JSON.parse(storedBudgets) : [];
+
+    renderCategories(categorySearchInput.value);
+    updateDashboardAndTransactionSummaries();
+    renderChart();
+    populateFilterCategories();
+    renderBudgets();
+}
+
+function saveLocalData() {
+    localStorage.setItem(LOCAL_STORAGE_KEYS.categories, JSON.stringify(categories || []));
+    localStorage.setItem(LOCAL_STORAGE_KEYS.transactions, JSON.stringify(transactions || []));
+    localStorage.setItem(LOCAL_STORAGE_KEYS.budgets, JSON.stringify(budgets || []));
+}
+
+function handleFirestorePermissionError(error, contextMessage = '') {
+    if (error?.code === 'permission-denied') {
+        console.warn(`Permissão negada no Firestore durante ${contextMessage}. Migrando para modo convidado.`);
+        showToast('Sem permissão no Firestore. Atualize as regras no console ou use o modo convidado.', 'error');
+        startGuestMode();
+    }
+}
 
 // Arrays para armazenar os dados do usuário
-let categories = []; 
+let categories = [];
 let transactions = [];
-let budgets = []; 
+let budgets = [];
+let hasAttemptedAnonymousSignIn = false;
 
 // Configurações da IA (ATUALIZADO)
 let aiConfig = {
@@ -966,6 +1005,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Carrega todos os dados do Firestore
     async function loadAllDataFromFirestore() {
+        if (isGuestMode) {
+            console.warn("Modo convidado ativo. Carregando dados locais em vez do Firestore.");
+            loadLocalData();
+            return;
+        }
         if (!isAuthReady || !userId) {
             console.warn("Autenticação não pronta ou userId ausente para carregar dados do Firestore. Abortando load.");
             return;
@@ -992,6 +1036,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }, (error) => {
             console.error("Erro ao carregar AI Config do Firestore:", error);
+            handleFirestorePermissionError(error, 'ler configurações de IA');
         });
 
         // Listener para Categorias (que agora incluem Caixinhas) - Usa getUserDocumentRef
@@ -1014,6 +1059,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }, (error) => {
             console.error("Erro ao carregar Categorias do Firestore:", error);
+            handleFirestorePermissionError(error, 'ler categorias');
         });
 
         // Listener para Orçamentos - Usa getUserDocumentRef
@@ -1030,6 +1076,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }, (error) => {
             console.error("Erro ao carregar Orçamentos do Firestore:", error);
+            handleFirestorePermissionError(error, 'ler orçamentos');
         });
 
         // Listener para Chave de API Gemini
@@ -1082,19 +1129,20 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Listener para Transações - Usa getUserCollectionRef
         const transactionsColRef = getUserCollectionRef('transactions');
         if (transactionsColRef) { 
-            onSnapshot(query(transactionsColRef, orderBy('date', 'desc')), (querySnapshot) => {
-                transactions = [];
-                querySnapshot.forEach((doc) => {
-                    transactions.push({ id: doc.id, ...doc.data() });
-                });
-                console.log("Transações carregadas do Firestore.");
-                renderTransactions();
-                updateDashboardAndTransactionSummaries();
-                renderChart();
-                checkAndSendDailyNotification(); // Checa por notificações após carregar transações
-            }, (error) => {
-                console.error("Erro ao carregar Transações do Firestore:", error);
+        onSnapshot(query(transactionsColRef, orderBy('date', 'desc')), (querySnapshot) => {
+            transactions = [];
+            querySnapshot.forEach((doc) => {
+                transactions.push({ id: doc.id, ...doc.data() });
             });
+            console.log("Transações carregadas do Firestore.");
+            renderTransactions();
+            updateDashboardAndTransactionSummaries();
+            renderChart();
+            checkAndSendDailyNotification(); // Checa por notificações após carregar transações
+        }, (error) => {
+            console.error("Erro ao carregar Transações do Firestore:", error);
+            handleFirestorePermissionError(error, 'ler transações');
+        });
         }
     }
 
@@ -1132,26 +1180,27 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Salva categorias no Firestore (como um único documento com array)
     // Agora lida com categorias normais e caixinhas
     async function saveCategories() {
-        if (!isAuthReady || !userId) { 
-            console.warn("saveCategories: Autenticação não pronta ou userId ausente. Tentando salvar localmente por agora.");
-            showToast('Erro: Autenticação não pronta para salvar no banco.', 'error');
-            return; 
+        if (isGuestMode || !isAuthReady || !userId) {
+            console.warn("saveCategories: Modo convidado ou autenticação indisponível. Salvando localmente.");
+            saveLocalData();
+            return;
         }
         try {
             const userCategoriesRef = getUserDocumentRef('categories', 'userCategories');
             if (userCategoriesRef) {
-                await setDoc(userCategoriesRef, { items: categories || [] }); 
+                await setDoc(userCategoriesRef, { items: categories || [] });
                 console.log("saveCategories: Categorias e Caixinhas salvas com sucesso no Firestore!");
             }
         } catch (error) {
             console.error("saveCategories: Erro ao salvar Categorias no Firestore:", error);
+            handleFirestorePermissionError(error, 'salvar categorias');
             showToast(`Erro ao salvar categoria: ${error.message}`, 'error');
         }
     }
 
     // Salva uma transação individual ou um grupo de transações no Firestore (adicione ou atualize)
     async function saveTransaction(transactionData, installments = 1) {
-        if (!isAuthReady || !userId) { console.warn("Autenticação não pronta ou userId ausente."); return; }
+        if (isGuestMode || !isAuthReady || !userId) { console.warn("Autenticação indisponível; salvando transações localmente."); saveLocalData(); return; }
         
         try {
             const transactionsColRef = getUserCollectionRef('transactions');
@@ -1226,7 +1275,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Salva orçamentos no Firestore (como um único documento com array)
     async function saveBudgets() {
-        if (!isAuthReady || !userId) { console.warn("Autenticação não pronta ou userId ausente."); return; }
+        if (isGuestMode || !isAuthReady || !userId) { console.warn("Autenticação indisponível; salvando orçamentos localmente."); saveLocalData(); return; }
         try {
             const userBudgetsRef = getUserDocumentRef('budgets', 'userBudgets');
             if (userBudgetsRef) {
@@ -1235,6 +1284,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         } catch (error) {
             console.error("Erro ao salvar Orçamentos:", error);
+            handleFirestorePermissionError(error, 'salvar orçamentos');
             showToast(`Erro ao salvar orçamento: ${error.message}`, 'error');
         }
     }
@@ -2710,12 +2760,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (loginScreen) {
             loginScreen.classList.add('hidden');
         }
+        isGuestMode = true;
         userId = localStorage.getItem('guestUserId');
         if (!userId) {
             userId = `guest-${generateUUID()}`;
             localStorage.setItem('guestUserId', userId);
         }
         isAuthReady = true;
+
+        loadLocalData();
 
         if (window.getComputedStyle(splashScreen).display !== 'none') {
             showSplashScreen();
@@ -2741,6 +2794,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     // Usuário está logado (seja por token, e-mail/senha, sessão anterior ou anônimo)
                     userId = user.uid;
                     isAuthReady = true;
+                    isGuestMode = false;
                     if (loginScreen) {
                         loginScreen.classList.add('hidden');
                     }
@@ -2762,10 +2816,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                     appContent.classList.add('hidden');
                     console.log("Nenhum usuário autenticado. Tentando login anônimo.");
                     try {
-                        await signInAnonymously(auth);
-                        console.log("Autenticado anonimamente com Firebase.");
+                        if (!hasAttemptedAnonymousSignIn) {
+                            hasAttemptedAnonymousSignIn = true;
+                            await signInAnonymously(auth);
+                            console.log("Autenticado anonimamente com Firebase.");
+                        }
                     } catch (anonError) {
                         console.error("Falha no login anônimo:", anonError);
+                        if (anonError?.code === 'auth/configuration-not-found') {
+                            showToast('Ative o login anônimo no Firebase Authentication para salvar no banco.', 'error');
+                        }
                         startGuestMode();
                     }
                 }
@@ -2783,10 +2843,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             } else if (!auth.currentUser) {
                 try {
-                    await signInAnonymously(auth);
-                    console.log("Autenticação anônima iniciada por ausência de token.");
+                    if (!hasAttemptedAnonymousSignIn) {
+                        hasAttemptedAnonymousSignIn = true;
+                        await signInAnonymously(auth);
+                        console.log("Autenticação anônima iniciada por ausência de token.");
+                    }
                 } catch (anonError) {
                     console.error("Falha no login anônimo inicial:", anonError);
+                    if (anonError?.code === 'auth/configuration-not-found') {
+                        showToast('Ative o login anônimo no Firebase Authentication para salvar no banco.', 'error');
+                    }
                     startGuestMode();
                 }
             }
